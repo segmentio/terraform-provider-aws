@@ -106,6 +106,30 @@ func resourceAwsLbListener() *schema.Resource {
 							DiffSuppressFunc: suppressIfDefaultActionTypeNot("forward"),
 						},
 
+						"forward": {
+							Type:             schema.TypeList,
+							Optional:         true,
+							DiffSuppressFunc: suppressIfDefaultActionTypeNot("forward"),
+							MaxItems:         1,
+							Elem: &schema.Resource{
+								Schema: map[string]*schema.Schema{
+									"target_groups": {
+										Type: schema.TypeList,
+										Elem: &schema.Resource{
+											Schema: map[string]*schema.Schema{
+												"target_group_arn": {
+													Type: schema.TypeString,
+												},
+												"weight": {
+													Type: schema.TypeInt,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+
 						"redirect": {
 							Type:             schema.TypeList,
 							Optional:         true,
@@ -370,7 +394,40 @@ func resourceAwsLbListenerCreate(d *schema.ResourceData, meta interface{}) error
 
 		switch defaultActionMap["type"].(string) {
 		case "forward":
-			action.TargetGroupArn = aws.String(defaultActionMap["target_group_arn"].(string))
+			targetGroupArn := defaultActionMap["target_group_arn"].(string)
+
+			forwardList := defaultActionMap["forward"].([]interface{})
+
+			if targetGroupArn != "" && len(forwardList) == 1 {
+				return errors.New("you can't set both target_group_arn and forward")
+			}
+
+			if targetGroupArn != "" {
+				action.TargetGroupArn = aws.String(targetGroupArn)
+			}
+
+			if len(forwardList) == 1 {
+				forwardActionConfigMap := forwardList[0].(map[string]interface{})
+				targetGroupsList := forwardActionConfigMap["target_groups"].([]interface{})
+
+				targetGroupsTuples := make([]*elbv2.TargetGroupTuple, 0, len(targetGroupsList))
+
+				for _, targetGroup := range targetGroupsList {
+					targetGroupMap := targetGroup.(map[string]interface{})
+
+					targetGroupsTuples = append(targetGroupsTuples, &elbv2.TargetGroupTuple{
+						TargetGroupArn: aws.String(targetGroupMap["target_group_arn"].(string)),
+						Weight:         aws.Int64(targetGroupMap["weight"].(int64)),
+					})
+
+				}
+
+				action.ForwardConfig = &elbv2.ForwardActionConfig{
+					TargetGroups: targetGroupsTuples,
+				}
+			} else {
+				return errors.New("for actions of type 'forward', you must specify a 'forward' block or 'target_group_arn'")
+			}
 
 		case "redirect":
 			redirectList := defaultActionMap["redirect"].([]interface{})
@@ -586,6 +643,22 @@ func resourceAwsLbListenerRead(d *schema.ResourceData, meta interface{}) error {
 		case "forward":
 			defaultActionMap["target_group_arn"] = aws.StringValue(defaultAction.TargetGroupArn)
 
+			targetGroups := []map[string]interface{}{}
+
+			for _, targetGroup := range defaultAction.ForwardConfig.TargetGroups {
+				targetGroups = append(targetGroups, map[string]interface{}{
+					"target_group_arn": aws.StringValue(targetGroup.TargetGroupArn),
+					"weight":           aws.Int64Value(targetGroup.Weight),
+				},
+				)
+			}
+
+			defaultActionMap["forward"] = []map[string]interface{}{
+				{
+					"target_groups": targetGroups,
+				},
+			}
+
 		case "redirect":
 			defaultActionMap["redirect"] = []map[string]interface{}{
 				{
@@ -699,7 +772,40 @@ func resourceAwsLbListenerUpdate(d *schema.ResourceData, meta interface{}) error
 
 			switch defaultActionMap["type"].(string) {
 			case "forward":
-				action.TargetGroupArn = aws.String(defaultActionMap["target_group_arn"].(string))
+				targetGroupArn := defaultActionMap["target_group_arn"].(string)
+
+				forwardList := defaultActionMap["forward"].([]interface{})
+
+				if targetGroupArn != "" && len(forwardList) == 1 {
+					return errors.New("you can't set both target_group_arn and forward")
+				}
+
+				if targetGroupArn != "" {
+					action.TargetGroupArn = aws.String(targetGroupArn)
+				}
+
+				if len(forwardList) == 1 {
+					forwardActionConfigMap := forwardList[0].(map[string]interface{})
+					targetGroupsList := forwardActionConfigMap["target_groups"].([]interface{})
+
+					targetGroupsTuples := make([]*elbv2.TargetGroupTuple, 0, len(targetGroupsList))
+
+					for _, targetGroup := range targetGroupsList {
+						targetGroupMap := targetGroup.(map[string]interface{})
+
+						targetGroupsTuples = append(targetGroupsTuples, &elbv2.TargetGroupTuple{
+							TargetGroupArn: aws.String(targetGroupMap["target_group_arn"].(string)),
+							Weight:         aws.Int64(targetGroupMap["weight"].(int64)),
+						})
+
+					}
+
+					action.ForwardConfig = &elbv2.ForwardActionConfig{
+						TargetGroups: targetGroupsTuples,
+					}
+				} else {
+					return errors.New("for actions of type 'forward', you must specify a 'forward' block or 'target_group_arn'")
+				}
 
 			case "redirect":
 				redirectList := defaultActionMap["redirect"].([]interface{})
